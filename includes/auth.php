@@ -216,11 +216,35 @@ function is_logged_in(): bool
 }
 
 /**
- * Kullanıcı admin mi kontrol et
+ * Kullanıcı süperadmin mi kontrol et
+ */
+function is_superadmin(): bool
+{
+    return isset($_SESSION['user']['role']) && $_SESSION['user']['role'] === 'superadmin';
+}
+
+/**
+ * Kullanıcı firma mı kontrol et
+ */
+function is_firma(): bool
+{
+    return isset($_SESSION['user']['role']) && $_SESSION['user']['role'] === 'firma';
+}
+
+/**
+ * Panel erişimi olan kullanıcı mı (firma veya süperadmin)
+ */
+function is_panel_user(): bool
+{
+    return is_superadmin() || is_firma();
+}
+
+/**
+ * @deprecated is_firma() kullanın
  */
 function is_admin(): bool
 {
-    return isset($_SESSION['user']['role']) && $_SESSION['user']['role'] === 'admin';
+    return is_firma();
 }
 
 /**
@@ -268,20 +292,55 @@ function verify_csrf_token(string $token): bool
 function require_login(): void
 {
     if (!is_logged_in()) {
-        header('Location: ' . BASE_URL . 'login.php');
+        header('Location: ' . BASE_URL . 'auth/login.php');
         exit;
     }
 }
 
 /**
- * Admin değilse ana sayfaya yönlendir
+ * Panel kullanıcısı değilse ana sayfaya yönlendir
  */
-function require_admin(): void
+function require_panel(): void
 {
-    if (!is_admin()) {
+    if (!is_panel_user()) {
         header('Location: ' . BASE_URL . 'index.php');
         exit;
     }
+}
+
+/**
+ * @deprecated require_panel() kullanın
+ */
+function require_admin(): void
+{
+    require_panel();
+}
+
+/**
+ * Süperadmin değilse panel ana sayfasına yönlendir
+ */
+function require_superadmin(): void
+{
+    if (!is_superadmin()) {
+        header('Location: ' . BASE_URL . 'admin/');
+        exit;
+    }
+}
+
+/**
+ * Firma kullanıcısının bir etkinliğe erişim yetkisi var mı
+ */
+function can_manage_event(array $event, ?int $user_id = null): bool
+{
+    if (is_superadmin()) {
+        return true;
+    }
+    $user_id = $user_id ?? get_current_user_id();
+    if (!$user_id) {
+        return false;
+    }
+    $created_by = $event['created_by'] ?? null;
+    return $created_by === null || (int)$created_by === (int)$user_id;
 }
 
 /**

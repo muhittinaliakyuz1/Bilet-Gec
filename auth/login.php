@@ -1,8 +1,9 @@
 <?php
 define('ALLOWED_ACCESS', true);
 
-require_once __DIR__ . '/includes/auth.php';
-require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/functions.php';
+require_once __DIR__ . '/../includes/activity_log.php';
 
 start_secure_session();
 ensure_user_schema($pdo);
@@ -10,6 +11,9 @@ ensure_user_schema($pdo);
 // Hata ve eski e‑posta değerlerini tutacak değişkenler
 $errors = [];
 $old_email = '';
+
+// Return URL'i baştan tanımla
+$return_url = $_GET['return'] ?? '';
 
 // If already logged in, redirect to home
 if (is_logged_in()) {
@@ -69,6 +73,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $loginError = null;
                 $success = login_user($pdo, $email, $password, $loginError);
                 if ($success) {
+                    send_login_notification_email($email, $_SESSION['user']['full_name'] ?? 'Kullanıcı');
+                    log_activity($pdo, (int)$_SESSION['user']['id'], 'login', 'user', (int)$_SESSION['user']['id'], ['email' => $email]);
+
+                    if (is_panel_user()) {
+                        header('Location: /ilterhoca/admin/');
+                        exit;
+                    }
+
                     // Check for return URL (already stored in $return_url)
                     if (!empty($return_url) && strpos($return_url, '/ilterhoca/') === false) {
                         $return_url = '/ilterhoca/' . ltrim($return_url, '/');
@@ -86,15 +98,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// CSRF token ve return URL sadece form gösterilirken oluşturulur
-$return_url = $_GET['return'] ?? '';
-
+// CSRF token sadece form gösterilirken oluşturulur
 $csrf_token = generate_csrf_token();
 
 $page_title = "Giriş Yap";
 $current_page = "login";
 
-require_once __DIR__ . '/includes/header.php';
+require_once __DIR__ . '/../includes/header.php';
 ?>
 
 <section class="auth-section">
@@ -163,4 +173,4 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </section>
 
-<?php require_once __DIR__ . '/includes/footer.php'; ?>
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

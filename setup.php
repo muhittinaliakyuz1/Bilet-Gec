@@ -5,13 +5,63 @@
  * Birden fazla kez güvenle çalıştırılabilir (DROP IF EXISTS).
  */
 
-$db_host = 'localhost';
-$db_user = 'root';
-$db_pass = '';
-$db_name = 'biletgec';
+function load_env_file(string $filePath): array
+{
+    if (!file_exists($filePath)) {
+        return [];
+    }
+
+    $lines = file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $vars = [];
+
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || strncmp($line, '#', 1) === 0) {
+            continue;
+        }
+
+        $parts = explode('=', $line, 2);
+        $name = trim($parts[0]);
+        $value = isset($parts[1]) ? trim($parts[1]) : '';
+        if ($name === '') {
+            continue;
+        }
+
+        $vars[$name] = preg_replace('/^(["\'])(.*)\1$/', '$2', $value);
+    }
+
+    return $vars;
+}
+
+function bg_env(string $key, $default = null)
+{
+    $value = getenv($key);
+    if ($value !== false) {
+        return $value;
+    }
+
+    if (isset($_ENV[$key])) {
+        return $_ENV[$key];
+    }
+
+    static $dotenv;
+    if ($dotenv === null) {
+        $dotenv = load_env_file(__DIR__ . '/.env');
+    }
+
+    return $dotenv[$key] ?? $default;
+}
+
+date_default_timezone_set(bg_env('APP_TIMEZONE', 'Europe/Istanbul'));
+mb_internal_encoding('UTF-8');
 
 $messages = [];
 $hasError = false;
+
+$db_host = bg_env('DB_HOST', 'localhost');
+$db_user = bg_env('DB_USER', 'root');
+$db_pass = bg_env('DB_PASS', '');
+$db_name = bg_env('DB_NAME', 'biletgec');
 
 try {
     // Önce veritabanı olmadan bağlan
@@ -35,6 +85,7 @@ try {
     // Önce foreign key içeren tabloları sil
     $pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
     $pdo->exec('DROP TABLE IF EXISTS refund_status_log');
+    $pdo->exec('DROP TABLE IF EXISTS activity_logs');
     $pdo->exec('DROP TABLE IF EXISTS refunds');
     $pdo->exec('DROP TABLE IF EXISTS referral_usages');
     $pdo->exec('DROP TABLE IF EXISTS point_transactions');
@@ -68,7 +119,8 @@ try {
             reset_token VARCHAR(128) DEFAULT NULL,
             reset_expires DATETIME DEFAULT NULL,
             verified_at DATETIME DEFAULT NULL,
-            role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+            email_verified_at DATETIME DEFAULT NULL,
+            role ENUM('user', 'firma', 'superadmin') NOT NULL DEFAULT 'user',
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY idx_users_email (email)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -104,14 +156,18 @@ try {
             image_url VARCHAR(500) DEFAULT NULL,
             organizer VARCHAR(255) DEFAULT NULL,
             status ENUM('active', 'cancelled', 'completed') NOT NULL DEFAULT 'active',
+            created_by INT UNSIGNED DEFAULT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_events_category (category_id),
             INDEX idx_events_status (status),
             INDEX idx_events_date (event_date),
             INDEX idx_events_city (city),
             INDEX idx_events_price (price),
             INDEX idx_events_combined (status, event_date),
-            CONSTRAINT fk_events_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL ON UPDATE CASCADE
+            INDEX idx_events_creator (created_by),
+            CONSTRAINT fk_events_category FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL ON UPDATE CASCADE,
+            CONSTRAINT fk_events_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
     $messages[] = ['success', 'Tablo oluşturuldu: events'];
@@ -171,10 +227,12 @@ try {
             ticket_code VARCHAR(20) NOT NULL,
             quantity INT UNSIGNED NOT NULL DEFAULT 1,
             total_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+            status ENUM('active', 'cancelled', 'refunded', 'used') NOT NULL DEFAULT 'active',
             purchased_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY idx_tickets_code (ticket_code),
             INDEX idx_tickets_user (user_id),
             INDEX idx_tickets_event (event_id),
+            INDEX idx_tickets_status (status),
             CONSTRAINT fk_tickets_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE SET NULL ON UPDATE CASCADE,
             CONSTRAINT fk_tickets_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
             CONSTRAINT fk_tickets_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE ON UPDATE CASCADE
@@ -417,6 +475,25 @@ try {
     ");
     $messages[] = ['success', 'Tablo oluşturuldu: refund_status_log'];
 
+    // activity_logs tablosu (genel aktivite kaydı)
+    $pdo->exec("
+        CREATE TABLE activity_logs (
+            id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            actor_id INT UNSIGNED NOT NULL,
+            action VARCHAR(50) NOT NULL,
+            target_type VARCHAR(30) DEFAULT NULL,
+            target_id INT UNSIGNED DEFAULT NULL,
+            details JSON DEFAULT NULL,
+            ip_address VARCHAR(45) DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_actor (actor_id),
+            INDEX idx_action (action),
+            INDEX idx_created (created_at),
+            CONSTRAINT fk_activity_actor FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    $messages[] = ['success', 'Tablo oluşturuldu: activity_logs'];
+
     // ──────────────────────────────────────────
     // 3. Varsayılan kategoriler
     // ──────────────────────────────────────────
@@ -438,15 +515,31 @@ try {
     $messages[] = ['success', count($categories) . ' kategori eklendi.'];
 
     // ──────────────────────────────────────────
-    // 4. Admin kullanıcı
+    // 4. Süperadmin ve demo firma kullanıcıları
     // ──────────────────────────────────────────
     $admin_hash = password_hash('admin123', PASSWORD_BCRYPT);
     $stmt = $pdo->prepare(
-        'INSERT INTO users (full_name, email, password_hash, phone, role, created_at)
-         VALUES (?, ?, ?, ?, ?, NOW())'
+        'INSERT INTO users (full_name, email, password_hash, phone, email_verified, verified_at, email_verified_at, role, created_at)
+         VALUES (?, ?, ?, ?, ?, NOW(), NOW(), ?, NOW())'
     );
-    $stmt->execute(['Admin', 'admin@biletgec.com', $admin_hash, '05001234567', 'admin']);
-    $messages[] = ['success', 'Admin kullanıcı oluşturuldu: admin@biletgec.com / admin123'];
+    $stmt->execute(['Süperadmin', 'admin@biletgec.com', $admin_hash, '05001234567', 1, 'superadmin']);
+    $admin_id = $pdo->lastInsertId();
+    $messages[] = ['success', 'Süperadmin oluşturuldu: admin@biletgec.com / admin123'];
+
+    $firma_hash = password_hash('firma123', PASSWORD_BCRYPT);
+    $stmt->execute(['Demo Firma', 'firma@biletgec.com', $firma_hash, '05009998877', 1, 'firma']);
+    $firma_id = $pdo->lastInsertId();
+    $messages[] = ['success', 'Demo firma oluşturuldu: firma@biletgec.com / firma123'];
+
+    // Demo kullanıcı
+    $user_hash = password_hash('demo123', PASSWORD_BCRYPT);
+    $stmt = $pdo->prepare(
+        'INSERT INTO users (full_name, email, password_hash, phone, email_verified, verified_at, email_verified_at, role, created_at)
+         VALUES (?, ?, ?, ?, ?, NOW(), NOW(), ?, NOW())'
+    );
+    $stmt->execute(['Demo Kullanıcı', 'demo@biletgec.com', $user_hash, '05001112233', 1, 'user']);
+    $demo_user_id = $pdo->lastInsertId();
+    $messages[] = ['success', 'Demo kullanıcı oluşturuldu: demo@biletgec.com / demo123'];
 
     // ──────────────────────────────────────────
     // 5. Demo etkinlikler (12 adet)
@@ -623,8 +716,8 @@ try {
     ];
 
     $stmt = $pdo->prepare(
-        'INSERT INTO events (category_id, title, description, short_description, venue, city, event_date, end_date, price, total_capacity, image_url, organizer, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
+        'INSERT INTO events (category_id, title, description, short_description, venue, city, event_date, end_date, price, total_capacity, image_url, organizer, status, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
     );
 
     foreach ($events as $event) {
@@ -642,9 +735,141 @@ try {
             $event['image_url'],
             $event['organizer'],
             'active',
+            $admin_id, // created_by admin
         ]);
     }
     $messages[] = ['success', count($events) . ' demo etkinlik eklendi.'];
+
+    // ──────────────────────────────────────────
+    // 6. Demo bilet ve rezervasyonlar
+    // ──────────────────────────────────────────
+    
+    // Demo kullanıcı için aktif bir rezervasyon (ilk etkinlik için)
+    $stmt = $pdo->prepare(
+        'INSERT INTO reservations (user_id, event_id, quantity, status, reserved_at, expires_at)
+         VALUES (?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 15 MINUTE))'
+    );
+    $stmt->execute([$demo_user_id, 1, 2, 'pending']);
+    $messages[] = ['success', 'Demo rezervasyon eklendi.'];
+
+    // Demo kullanıcı için satın alınmış biletler (2. ve 3. etkinlik)
+    $stmt = $pdo->prepare(
+        'INSERT INTO tickets (user_id, event_id, ticket_code, quantity, total_price, status, purchased_at)
+         VALUES (?, ?, ?, ?, ?, ?, NOW())'
+    );
+    
+    $ticket1_code = 'TKT' . strtoupper(bin2hex(random_bytes(7)));
+    $stmt->execute([$demo_user_id, 2, $ticket1_code, 1, 350.00, 'active']);
+    $ticket1_id = $pdo->lastInsertId();
+    
+    $ticket2_code = 'TKT' . strtoupper(bin2hex(random_bytes(7)));
+    $stmt->execute([$demo_user_id, 3, $ticket2_code, 2, 360.00, 'active']);
+    $ticket2_id = $pdo->lastInsertId();
+    
+    $messages[] = ['success', '2 demo bilet eklendi.'];
+
+    // ──────────────────────────────────────────
+    // 7. Loyalty points (demo kullanıcı için)
+    // ──────────────────────────────────────────
+    $stmt = $pdo->prepare(
+        'INSERT INTO loyalty_points (user_id, points, total_spent, last_purchase_at, created_at)
+         VALUES (?, ?, ?, NOW(), NOW())'
+    );
+    $stmt->execute([$demo_user_id, 71, 710.00]); // 710 TL harcama = 71 puan
+    $messages[] = ['success', 'Demo kullanıcı için loyalty points oluşturuldu.'];
+
+    // Point transactions
+    $stmt = $pdo->prepare(
+        'INSERT INTO point_transactions (user_id, ticket_id, amount, transaction_type, description, created_at)
+         VALUES (?, ?, ?, ?, ?, NOW())'
+    );
+    $stmt->execute([$demo_user_id, $ticket1_id, 35, 'earn', 'Caz Festivali bilet alımı']);
+    $stmt->execute([$demo_user_id, $ticket2_id, 36, 'earn', 'Seramik Atölyesi bilet alımı']);
+    $messages[] = ['success', 'Demo point transactions eklendi.'];
+
+    // ──────────────────────────────────────────
+    // 8. Demo kupon
+    // ──────────────────────────────────────────
+    $stmt = $pdo->prepare(
+        'INSERT INTO coupons (code, description, discount_type, discount_value, minimum_order_amount, maximum_discount, 
+         usage_limit, usage_count, per_user_limit, is_active, starts_at, expires_at, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
+    );
+    
+    // Yüzde indirim kuponu
+    $stmt->execute([
+        'YENIYIL2026',
+        'Yeni yıl özel %20 indirim',
+        'percentage',
+        20.00,
+        100.00,
+        150.00,
+        100,
+        0,
+        1,
+        1,
+        '2026-01-01 00:00:00',
+        '2026-12-31 23:59:59',
+        $admin_id
+    ]);
+    
+    // Sabit indirim kuponu
+    $stmt->execute([
+        'ILKALIS50',
+        'İlk alışverişe 50 TL indirim',
+        'fixed',
+        50.00,
+        150.00,
+        NULL,
+        50,
+        0,
+        1,
+        1,
+        '2026-01-01 00:00:00',
+        '2026-12-31 23:59:59',
+        $admin_id
+    ]);
+    
+    // Sınırlı sayıda kupon
+    $stmt->execute([
+        'ERKENAL15',
+        'Erken kayıt indirimi %15',
+        'percentage',
+        15.00,
+        75.00,
+        100.00,
+        10,
+        0,
+        1,
+        1,
+        '2026-06-01 00:00:00',
+        '2026-06-30 23:59:59',
+        $admin_id
+    ]);
+    
+    $messages[] = ['success', '3 demo kupon eklendi.'];
+
+    // ──────────────────────────────────────────
+    // 9. Demo referral code
+    // ──────────────────────────────────────────
+    $stmt = $pdo->prepare(
+        'INSERT INTO referral_codes (user_id, code, reward_type, reward_amount, reward_discount, 
+         usage_limit, usage_count, is_active, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())'
+    );
+    
+    $stmt->execute([
+        $demo_user_id,
+        'DEMO' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 6)),
+        'points',
+        50,
+        0.00,
+        NULL,
+        0,
+        1
+    ]);
+    
+    $messages[] = ['success', 'Demo referral code oluşturuldu.'];
 
     $messages[] = ['success', '✅ Kurulum başarıyla tamamlandı!'];
 
@@ -821,12 +1046,19 @@ try {
 
             <?php if (!$hasError): ?>
                 <div class="info">
-                    <strong>Admin Girişi:</strong><br>
+                    <strong>Süperadmin Girişi:</strong><br>
                     E-posta: admin@biletgec.com<br>
                     Şifre: admin123<br><br>
+                    <strong>Demo Firma:</strong><br>
+                    E-posta: firma@biletgec.com<br>
+                    Şifre: firma123<br><br>
+                    <strong>Demo Kullanıcı:</strong><br>
+                    E-posta: demo@biletgec.com<br>
+                    Şifre: demo123<br><br>
                     <strong>Veritabanı:</strong> biletgec<br>
-                    <strong>Tablolar:</strong> users, categories, events, reservations, tickets<br>
-                    <strong>Kategoriler:</strong> 8 adet &bull; <strong>Etkinlikler:</strong> 12 adet
+                    <strong>Tablolar:</strong> users, categories, events, reservations, tickets, refunds, coupons, loyalty_points, vb.<br>
+                    <strong>Kategoriler:</strong> 8 adet &bull; <strong>Etkinlikler:</strong> 12 adet<br>
+                    <strong>Demo Veriler:</strong> 2 bilet, 1 rezervasyon, 3 kupon, loyalty points
                 </div>
 
                 <div class="footer">

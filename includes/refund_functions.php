@@ -244,20 +244,19 @@ function complete_refund(PDO $pdo, int $refund_id, int $admin_id,
         );
         $stmt->execute([$refund_id, $admin_id]);
 
-        // Sadakat puanlarını geri al (eğer varsa)
-        if (!empty($refund['user_id'])) {
-            $stmt = $pdo->prepare(
-                'SELECT t.id FROM tickets t WHERE t.id = ? LIMIT 1'
-            );
-            $stmt->execute([$refund['ticket_id']]);
-            if ($stmt->fetch()) {
-                // Biletle ilgili puanları iptal et
-                add_loyalty_points($pdo, $refund['user_id'], 0, 'expire', 
-                                 'İade nedeniyle puanlar iptal edildi', $refund['ticket_id']);
-            }
-        }
-
         $pdo->commit();
+
+        // Sadakat puanlarını geri al (ayrı işlem — iç içe transaction hatasını önler)
+        if (!empty($refund['user_id'])) {
+            add_loyalty_points(
+                $pdo,
+                (int)$refund['user_id'],
+                0,
+                'expire',
+                'İade nedeniyle puanlar iptal edildi',
+                (int)$refund['ticket_id']
+            );
+        }
 
         // Güncellenmiş iade verisini döndür
         $stmt = $pdo->prepare('SELECT * FROM refunds WHERE id = ?');
@@ -343,7 +342,7 @@ function get_user_refunds(PDO $pdo, int $user_id, string $status = ''): array
  * @param int $offset Offset
  * @return array İade talepleri
  */
-function get_all_refunds(PDO $pdo, string $status = '', int $limit = 50, int $offset = 0): array
+function get_all_refunds(PDO $pdo, string $status = '', int $limit = 50, int $offset = 0, ?int $firma_user_id = null): array
 {
     try {
         $sql = 'SELECT r.*, u.full_name, u.email, e.title AS event_title, e.event_date, 
@@ -356,6 +355,11 @@ function get_all_refunds(PDO $pdo, string $status = '', int $limit = 50, int $of
                 WHERE 1=1';
         
         $params = [];
+
+        if ($firma_user_id !== null) {
+            $sql .= ' AND e.created_by = ?';
+            $params[] = $firma_user_id;
+        }
         
         if (!empty($status)) {
             $sql .= ' AND r.status = ?';
@@ -406,16 +410,25 @@ function get_refund_status_history(PDO $pdo, int $refund_id): array
  * @param PDO $pdo Veritabanı bağlantısı
  * @return array İstatistikler
  */
-function get_refund_statistics(PDO $pdo): array
+function get_refund_statistics(PDO $pdo, ?int $firma_user_id = null): array
 {
     try {
         $stats = [];
         
-        // İade istatistiklerini durum bazlı al
         $statuses = ['pending', 'approved', 'completed', 'rejected'];
         foreach ($statuses as $s) {
-            $stmt = $pdo->prepare('SELECT COUNT(*) as count, COALESCE(SUM(refund_amount), 0) as total FROM refunds WHERE status = ?');
-            $stmt->execute([$s]);
+            if ($firma_user_id !== null) {
+                $stmt = $pdo->prepare(
+                    'SELECT COUNT(*) as count, COALESCE(SUM(r.refund_amount), 0) as total
+                     FROM refunds r
+                     JOIN events e ON r.event_id = e.id
+                     WHERE r.status = ? AND e.created_by = ?'
+                );
+                $stmt->execute([$s, $firma_user_id]);
+            } else {
+                $stmt = $pdo->prepare('SELECT COUNT(*) as count, COALESCE(SUM(refund_amount), 0) as total FROM refunds WHERE status = ?');
+                $stmt->execute([$s]);
+            }
             $stats[$s] = $stmt->fetch();
         }
         

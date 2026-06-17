@@ -1,8 +1,8 @@
 <?php
 define('ALLOWED_ACCESS', true);
 
-require_once __DIR__ . '/includes/auth.php';
-require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/functions.php';
 
 start_secure_session();
 ensure_user_schema($pdo);
@@ -38,7 +38,7 @@ $csrf_token = generate_csrf_token();
 $page_title = 'Şifremi Unuttum';
 $current_page = 'forgot_password';
 
-require_once __DIR__ . '/includes/header.php';
+require_once __DIR__ . '/../includes/header.php';
 ?>
 
 <section class="auth-section">
@@ -84,4 +84,4 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </section>
 
-<?php require_once __DIR__ . '/includes/footer.php'; ?>
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

@@ -11,7 +11,7 @@ require_login();
 $user_id = (int) ($_SESSION['user']['id'] ?? 0);
 $user = get_user_by_id($pdo, $user_id);
 if (!$user) {
-    header('Location: /ilterhoca/logout.php');
+    header('Location: /ilterhoca/auth/logout.php');
     exit;
 }
 
@@ -284,7 +284,10 @@ require_once __DIR__ . '/includes/header.php';
                 <div class="profile-main-header">
                     <div class="profile-main-title">
                         <h1><?php echo htmlspecialchars($user['full_name']); ?></h1>
-                        <p><?= ($user['role'] === 'admin') ? 'Yönetici' : 'Freelancer'; ?></p>
+                        <p><?php
+                            $roleLabels = ['superadmin' => 'Süperadmin', 'firma' => 'Firma', 'admin' => 'Firma', 'user' => 'Kullanıcı'];
+                            echo htmlspecialchars($roleLabels[$user['role']] ?? 'Kullanıcı');
+                        ?></p>
                     </div>
                     <div class="profile-card-actions">
                         <button type="button" class="btn btn-primary" data-modal-open="profile-edit-modal">Profili Düzenle</button>

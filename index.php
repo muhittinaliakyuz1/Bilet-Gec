@@ -10,8 +10,8 @@ start_secure_session();
 expire_old_reservations($pdo);
 
 // Fetch stats
-$stmt = $pdo->prepare("SELECT COUNT(*) FROM events WHERE status = ?");
-$stmt->execute(['active']);
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM events WHERE status != ?");
+$stmt->execute(['cancelled']);
 $total_events = (int)$stmt->fetchColumn();
 
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM users");
@@ -27,26 +27,34 @@ $stmt = $pdo->prepare("SELECT * FROM categories ORDER BY name ASC");
 $stmt->execute();
 $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Fetch active events with category info
+// Fetch upcoming events with category info
 $stmt = $pdo->prepare("
     SELECT e.*, c.name AS category_name, c.icon AS category_icon, c.slug AS category_slug
     FROM events e
     LEFT JOIN categories c ON e.category_id = c.id
-    WHERE e.status = 'active' AND e.event_date >= NOW()
+    WHERE e.status != 'cancelled' AND e.event_date >= NOW()
     ORDER BY e.event_date ASC
 ");
 $stmt->execute();
 $events = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Collect unique cities for filter dropdown
+// Collect unique cities and venues for filter dropdowns
 $cities = [];
+$venues = [];
+$venueCityMap = [];
 foreach ($events as $event) {
-    $city = $event['city'];
-    if (!empty($city) && !in_array($city, $cities)) {
+    $city = trim($event['city']);
+    if (!empty($city) && !in_array($city, $cities, true)) {
         $cities[] = $city;
+    }
+    $venue = trim($event['venue']);
+    if (!empty($venue) && !in_array($venue, $venues, true)) {
+        $venues[] = $venue;
+        $venueCityMap[$venue] = $city;
     }
 }
 sort($cities);
+sort($venues);
 
 $page_title = "Ana Sayfa";
 $current_page = "home";
@@ -84,11 +92,11 @@ require_once __DIR__ . '/includes/header.php';
 <section class="category-filter-section">
     <div class="container">
         <div class="category-filter-bar">
-            <button class="category-btn active" data-category="all">
+            <button class="category-btn active" data-category="all" data-category-filter="all">
                 <span class="category-btn-icon">🎯</span> Tümü
             </button>
             <?php foreach ($categories as $cat): ?>
-            <button class="category-btn" data-category="<?php echo (int)$cat['id']; ?>">
+            <button class="category-btn" data-category="<?php echo (int)$cat['id']; ?>" data-category-filter="<?php echo (int)$cat['id']; ?>">
                 <span class="category-btn-icon"><?php echo htmlspecialchars($cat['icon']); ?></span>
                 <?php echo htmlspecialchars($cat['name']); ?>
             </button>
@@ -107,6 +115,12 @@ require_once __DIR__ . '/includes/header.php';
                     <option value="">Tüm Şehirler</option>
                     <?php foreach ($cities as $city): ?>
                     <option value="<?php echo htmlspecialchars($city); ?>"><?php echo htmlspecialchars($city); ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <select id="venue-filter" class="filter-select glass-input" disabled>
+                    <option value="">Önce şehir seçin</option>
+                    <?php foreach ($venues as $venue): ?>
+                    <option value="<?php echo htmlspecialchars($venue); ?>" data-city="<?php echo htmlspecialchars($venueCityMap[$venue] ?? ''); ?>"><?php echo htmlspecialchars($venue); ?></option>
                     <?php endforeach; ?>
                 </select>
                 <select id="date-filter" class="filter-select glass-input">
@@ -153,9 +167,9 @@ require_once __DIR__ . '/includes/header.php';
                     $formatted_date = $event_date_obj->format('d M Y, H:i');
                     $event_date_iso = $event_date_obj->format('Y-m-d');
                 ?>
-                <div class="event-card" data-category="<?php echo (int)$event['category_id']; ?>" data-city="<?php echo htmlspecialchars($event['city']); ?>" data-date="<?php echo $event_date_iso; ?>" data-price="<?php echo (float)$event['price']; ?>">
+                <div class="event-card" data-event-card data-title="<?php echo htmlspecialchars($event['title']); ?>" data-venue="<?php echo htmlspecialchars($event['venue']); ?>" data-category="<?php echo (int)$event['category_id']; ?>" data-city="<?php echo htmlspecialchars($event['city']); ?>" data-date="<?php echo $event_date_iso; ?>" data-price="<?php echo (float)$event['price']; ?>">
                     <div class="event-card-image">
-                        <img src="<?php echo htmlspecialchars($event['image_url']); ?>" alt="<?php echo htmlspecialchars($event['title']); ?>" loading="lazy">
+                        <img src="<?php echo htmlspecialchars(resolve_url($event['image_url'])); ?>" alt="<?php echo htmlspecialchars($event['title']); ?>" loading="lazy" onerror="this.src='https://placehold.co/800x400/1a1a2e/7c3aed?text=Görsel';">
                         <span class="event-card-category"><?php echo htmlspecialchars($event['category_icon']); ?> <?php echo htmlspecialchars($event['category_name']); ?></span>
                         <span class="event-card-date"><?php echo $formatted_date; ?></span>
                     </div>
@@ -217,7 +231,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // City filter
     const cityFilter = document.getElementById('city-filter');
-    cityFilter.addEventListener('change', filterEvents);
+    const venueFilter = document.getElementById('venue-filter');
+    const venueOptions = venueFilter ? Array.from(venueFilter.querySelectorAll('option[data-city]')) : [];
+
+    cityFilter.addEventListener('change', () => {
+        updateVenueOptions();
+        filterEvents();
+    });
 
     // Date filter
     const dateFilter = document.getElementById('date-filter');
@@ -230,6 +250,35 @@ document.addEventListener('DOMContentLoaded', function() {
     // Hero search
     const heroSearch = document.getElementById('hero-search-input');
     heroSearch.addEventListener('input', filterEvents);
+
+    // Venue filter
+    if (venueFilter) {
+        venueFilter.addEventListener('change', filterEvents);
+    }
+
+    function updateVenueOptions() {
+        if (!venueFilter) return;
+        const selectedCity = cityFilter.value;
+        const allOptions = Array.from(venueFilter.querySelectorAll('option[data-city]'));
+
+        if (!selectedCity) {
+            venueFilter.innerHTML = '<option value="">Önce şehir seçin</option>';
+            venueFilter.disabled = true;
+            return;
+        }
+
+        const matchingCities = venueOptions.filter(opt => opt.dataset.city === selectedCity);
+        if (matchingCities.length === 0) {
+            venueFilter.innerHTML = '<option value="">Bu şehirde mekan bulunamadı</option>';
+            venueFilter.disabled = true;
+            return;
+        }
+
+        venueFilter.disabled = false;
+        venueFilter.innerHTML = '<option value="">Tüm Mekanlar</option>' + matchingCities.map(opt => `<option value="${opt.value}">${opt.textContent}</option>`).join('');
+    }
+
+    updateVenueOptions();
 
     function filterEvents() {
         const activeCategory = document.querySelector('.category-btn.active').dataset.category;
@@ -250,6 +299,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // City filter
             if (selectedCity && card.dataset.city !== selectedCity) {
+                show = false;
+            }
+
+            // Venue filter
+            const selectedVenue = venueFilter ? venueFilter.value : '';
+            if (selectedVenue && card.dataset.venue !== selectedVenue) {
                 show = false;
             }
 
@@ -324,7 +379,13 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
-});
-</script>
 
-<?php require_once __DIR__ . '/includes/footer.php'; ?>
+        // Keep upcoming events sorted by nearest date and refresh ordering every 30 seconds
+        setInterval(() => {
+            filterEvents();
+        }, 30000);
+
+        // Ensure initial ordering is correct
+        filterEvents();
+    });
+</script>

@@ -95,7 +95,7 @@ function get_categories(PDO $pdo): array
 
 /**
  * Etkinliğin kalan kapasitesini hesapla
- * Kapasite = toplam - onaylanmış biletler (bekleyenler kilitlenmez, ödeme anında kontrol edilir)
+ * Kapasite = toplam - onaylanmış biletler (bekleyenler kilitlenmediği için, ödeme anında kontrol edilir)
  *
  * @param PDO $pdo      Veritabanı bağlantısı
  * @param int $event_id Etkinlik ID
@@ -491,6 +491,46 @@ function ensure_user_schema(PDO $pdo): void
     } catch (PDOException $e) {
         error_log('ensure_user_schema email_verification_log hatası: ' . $e->getMessage());
     }
+
+    // Rol ENUM migrasyonu: admin -> firma, superadmin ekle
+    try {
+        $roleCol = $pdo->query("SHOW COLUMNS FROM users LIKE 'role'")->fetch(PDO::FETCH_ASSOC);
+        if ($roleCol && isset($roleCol['Type'])) {
+            $type = $roleCol['Type'];
+            if (strpos($type, 'superadmin') === false || strpos($type, 'firma') === false) {
+                $pdo->exec("ALTER TABLE users MODIFY role ENUM('user','admin','firma','superadmin') NOT NULL DEFAULT 'user'");
+            }
+            $pdo->exec("UPDATE users SET role = 'firma' WHERE role = 'admin'");
+            $pdo->exec("ALTER TABLE users MODIFY role ENUM('user','firma','superadmin') NOT NULL DEFAULT 'user'");
+        }
+    } catch (PDOException $e) {
+        error_log('ensure_user_schema role migrasyon hatası: ' . $e->getMessage());
+    }
+
+    // activity_logs tablosu
+    try {
+        $tableStmt = $pdo->prepare("SHOW TABLES LIKE ?");
+        $tableStmt->execute(['activity_logs']);
+        if (!$tableStmt->fetch()) {
+            $pdo->exec("
+                CREATE TABLE activity_logs (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    actor_id INT UNSIGNED NOT NULL,
+                    action VARCHAR(50) NOT NULL,
+                    target_type VARCHAR(30) DEFAULT NULL,
+                    target_id INT UNSIGNED DEFAULT NULL,
+                    details JSON DEFAULT NULL,
+                    ip_address VARCHAR(45) DEFAULT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_actor (actor_id),
+                    INDEX idx_action (action),
+                    INDEX idx_created (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ");
+        }
+    } catch (PDOException $e) {
+        error_log('ensure_user_schema activity_logs hatası: ' . $e->getMessage());
+    }
 }
 
 /**
@@ -503,7 +543,7 @@ function ensure_user_schema(PDO $pdo): void
  */
 function send_verification_email(string $email, string $name, string $token): bool
 {
-    $verificationUrl = 'http://' . $_SERVER['HTTP_HOST'] . BASE_URL . 'verify_email.php?token=' . urlencode($token);
+    $verificationUrl = 'http://' . $_SERVER['HTTP_HOST'] . BASE_URL . 'auth/verify_email.php?token=' . urlencode($token);
     $subject = 'Bilet-Geç E-posta Doğrulama';
     $body = '<h2>Merhaba ' . htmlspecialchars($name ?: $email) . ',</h2>' .
         '<p>Hesabınızı tamamlamak için lütfen aşağıdaki butona tıklayarak e-posta adresinizi doğrulayın.</p>' .
@@ -524,7 +564,7 @@ function send_verification_email(string $email, string $name, string $token): bo
  */
 function send_password_reset_email(string $email, string $token): bool
 {
-    $resetUrl = 'http://' . $_SERVER['HTTP_HOST'] . BASE_URL . 'reset_password.php?token=' . urlencode($token);
+    $resetUrl = 'http://' . $_SERVER['HTTP_HOST'] . BASE_URL . 'auth/reset_password.php?token=' . urlencode($token);
     $subject = 'Bilet-Geç Şifre Sıfırlama';
     $body = '<h2>Şifre Sıfırlama Talebi</h2>' .
         '<p>Bu isteği siz yaptıysanız, aşağıdaki buton ile yeni şifrenizi belirleyebilirsiniz.</p>' .
@@ -532,6 +572,94 @@ function send_password_reset_email(string $email, string $token): bool
         '<p>Bağlantı 1 saat boyunca geçerlidir.</p>' .
         '<p>Eğer siz bu isteği yapmadıysanız bu e-postayı göz ardı edebilirsiniz.</p>' .
         '<p>Teşekkürler,<br>Bilet-Geç</p>';
+
+    return send_mail_message($email, $subject, $body);
+}
+
+/**
+ * Send login notification email.
+ *
+ * @param string $email Kullanıcı e-posta adresi
+ * @param string $name Kullanıcı adı
+ * @return bool E-posta gönderimi başarılı mı
+ */
+function send_login_notification_email(string $email, string $name): bool
+{
+    // Giriş bilgileri
+    $loginTime = date('d.m.Y H:i:s');
+    $ipAddress = $_SERVER['REMOTE_ADDR'] ?? 'Bilinmiyor';
+    $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? 'Bilinmiyor';
+    
+    // Tarayıcı ve işletim sistemi bilgisi çıkar
+    $browser = 'Bilinmiyor';
+    $os = 'Bilinmiyor';
+    
+    if (strpos($userAgent, 'Chrome') !== false) $browser = 'Chrome';
+    elseif (strpos($userAgent, 'Firefox') !== false) $browser = 'Firefox';
+    elseif (strpos($userAgent, 'Safari') !== false) $browser = 'Safari';
+    elseif (strpos($userAgent, 'Edge') !== false) $browser = 'Edge';
+    elseif (strpos($userAgent, 'Opera') !== false) $browser = 'Opera';
+    
+    if (strpos($userAgent, 'Windows') !== false) $os = 'Windows';
+    elseif (strpos($userAgent, 'Mac') !== false) $os = 'Mac OS';
+    elseif (strpos($userAgent, 'Linux') !== false) $os = 'Linux';
+    elseif (strpos($userAgent, 'Android') !== false) $os = 'Android';
+    elseif (strpos($userAgent, 'iOS') !== false) $os = 'iOS';
+    
+    $subject = 'Bilet-Geç - Hesabınıza Giriş Yapıldı';
+    $body = '
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #10b981;">Merhaba ' . htmlspecialchars($name) . ',</h2>
+        
+        <p style="font-size: 16px; line-height: 1.6;">
+            Hesabınıza başarılı bir giriş yapıldı. Bu sizin değil miydiniz?
+        </p>
+        
+        <div style="background: #f3f4f6; border-radius: 8px; padding: 20px; margin: 20px 0;">
+            <h3 style="color: #374151; margin-top: 0;">Giriş Detayları:</h3>
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                    <td style="padding: 8px 0; color: #6b7280;">🕐 Zaman:</td>
+                    <td style="padding: 8px 0; font-weight: bold;">' . htmlspecialchars($loginTime) . '</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; color: #6b7280;">🌍 IP Adresi:</td>
+                    <td style="padding: 8px 0; font-weight: bold;">' . htmlspecialchars($ipAddress) . '</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; color: #6b7280;">💻 Tarayıcı:</td>
+                    <td style="padding: 8px 0; font-weight: bold;">' . htmlspecialchars($browser) . '</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; color: #6b7280;">📱 İşletim Sistemi:</td>
+                    <td style="padding: 8px 0; font-weight: bold;">' . htmlspecialchars($os) . '</td>
+                </tr>
+            </table>
+        </div>
+        
+        <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0; border-radius: 4px;">
+            <p style="margin: 0; color: #92400e;">
+                <strong>⚠️ Bu siz değil miydiniz?</strong><br>
+                Eğer bu giriş tarafınızca yapılmadıysa, derhal şifrenizi değiştirin ve hesabınızın güvenliğini kontrol edin.
+            </p>
+        </div>
+        
+        <p style="text-align: center; margin: 30px 0;">
+            <a href="http://' . $_SERVER['HTTP_HOST'] . BASE_URL . 'profile.php" 
+               style="display: inline-block; padding: 12px 30px; background: #10b981; color: #fff; 
+                      text-decoration: none; border-radius: 6px; font-weight: bold;">
+                Profilimi Görüntüle
+            </a>
+        </p>
+        
+        <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
+        
+        <p style="color: #6b7280; font-size: 14px; text-align: center;">
+            Hesap güvenliği konusunda herhangi bir sorunuz varsa, lütfen bizimle iletişime geçin.<br>
+            <strong>Teşekkürler,</strong><br>
+            Bilet-Geç Ekibi
+        </p>
+    </div>';
 
     return send_mail_message($email, $subject, $body);
 }
@@ -707,7 +835,7 @@ function format_price(float $price): string
  * @param string $date Tarih string'i
  * @return string       Türkçe formatlanmış tarih
  */
-function format_date(string $date): string
+function format_date(string $date, ?string $format = null): string
 {
     $months = [
         1 => 'Ocak', 2 => 'Şubat', 3 => 'Mart', 4 => 'Nisan',
@@ -728,6 +856,9 @@ function format_date(string $date): string
     $timestamp = strtotime($date);
     if ($timestamp === false) {
         return $date;
+    }
+    if ($format) {
+        return date($format, $timestamp);
     }
 
     $day_num    = (int) date('j', $timestamp);
@@ -1357,9 +1488,19 @@ function search_events(PDO $pdo, array $filters = []): array
                        e.total_capacity - COALESCE((SELECT SUM(quantity) FROM tickets WHERE event_id = e.id), 0) AS remaining_capacity
                 FROM events e
                 LEFT JOIN categories c ON e.category_id = c.id
-                WHERE e.status = :status';
+                WHERE e.status != :status';
         
-        $params = ['status' => 'active'];
+        $params = ['status' => 'cancelled'];
+
+        if (isset($filters['status']) && $filters['status'] !== '') {
+            $sql = 'SELECT e.*, c.name AS category_name, c.icon AS category_icon, c.slug AS category_slug,
+                       (SELECT COUNT(*) FROM tickets WHERE event_id = e.id) AS tickets_sold,
+                       e.total_capacity - COALESCE((SELECT SUM(quantity) FROM tickets WHERE event_id = e.id), 0) AS remaining_capacity
+                FROM events e
+                LEFT JOIN categories c ON e.category_id = c.id
+                WHERE e.status = :status';
+            $params = ['status' => $filters['status']];
+        }
         
         // Kategori filtresi
         if (!empty($filters['category_id'])) {
@@ -1371,6 +1512,12 @@ function search_events(PDO $pdo, array $filters = []): array
         if (!empty($filters['city'])) {
             $sql .= ' AND e.city = :city';
             $params['city'] = $filters['city'];
+        }
+
+        // Mekan filtresi
+        if (!empty($filters['venue'])) {
+            $sql .= ' AND e.venue = :venue';
+            $params['venue'] = $filters['venue'];
         }
         
         // Arama filtresi
@@ -1448,6 +1595,107 @@ function search_events(PDO $pdo, array $filters = []): array
 }
 
 /**
+ * Yüklenen etkinlik görselini kaydeder veya girilen URL'yi döner.
+ *
+ * @param array $files Upload dosya verileri
+ * @param string $imageUrl Kullanıcı tarafından girilen görsel URL'si
+ * @param string $existingImageUrl Mevcut etkinlik görseli
+ * @param string $defaultImage Varsayılan görsel URL'si
+ * @return string Görsel yolu veya URL
+ */
+function get_uploaded_event_image_details(array $files, string $imageUrl = '', string $existingImageUrl = '', string $defaultImage = 'https://placehold.co/800x400/1a1a2e/7c3aed?text=Etkinlik'): array
+{
+    $imageUrl = trim($imageUrl);
+    $existingImageUrl = trim($existingImageUrl);
+
+    if (!isset($files['image_file']) || $files['image_file']['error'] === UPLOAD_ERR_NO_FILE) {
+        if ($imageUrl !== '' && !is_safe_image_url($imageUrl)) {
+            return [
+                'path' => $existingImageUrl !== '' ? $existingImageUrl : $defaultImage,
+                'error' => 'Geçersiz görsel URLsi. Lütfen yalnızca http(s) ya da geçerli bir dosya yolu kullanın.',
+                'file_uploaded' => false,
+            ];
+        }
+    }
+
+    if (!isset($files['image_file'])) {
+        if ($imageUrl !== '') {
+            return ['path' => $imageUrl, 'error' => null, 'file_uploaded' => false];
+        }
+        if ($existingImageUrl !== '') {
+            return ['path' => $existingImageUrl, 'error' => null, 'file_uploaded' => false];
+        }
+        return ['path' => $defaultImage, 'error' => null, 'file_uploaded' => false];
+    }
+
+    $file = $files['image_file'];
+    if ($file['error'] === UPLOAD_ERR_NO_FILE) {
+        if ($imageUrl !== '') {
+            return ['path' => $imageUrl, 'error' => null, 'file_uploaded' => false];
+        }
+        if ($existingImageUrl !== '') {
+            return ['path' => $existingImageUrl, 'error' => null, 'file_uploaded' => false];
+        }
+        return ['path' => $defaultImage, 'error' => null, 'file_uploaded' => false];
+    }
+
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return ['path' => $existingImageUrl !== '' ? $existingImageUrl : $defaultImage, 'error' => upload_error_message($file['error']), 'file_uploaded' => true];
+    }
+
+    $uploadDir = __DIR__ . '/../assets/images/';
+    if (!is_dir($uploadDir) && !mkdir($uploadDir, 0755, true) && !is_dir($uploadDir)) {
+        error_log('Görsel klasörü oluşturulamadı: ' . $uploadDir);
+        return ['path' => $existingImageUrl !== '' ? $existingImageUrl : $defaultImage, 'error' => 'Görsel yükleme klasörü oluşturulamadı.', 'file_uploaded' => true];
+    }
+
+    $originalName = pathinfo($file['name'], PATHINFO_FILENAME);
+    $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    $allowedTypes = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+    if (!in_array($extension, $allowedTypes, true)) {
+        return ['path' => $existingImageUrl !== '' ? $existingImageUrl : $defaultImage, 'error' => 'Sadece JPG, PNG, GIF veya WEBP formatları desteklenir.', 'file_uploaded' => true];
+    }
+
+    $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $originalName);
+    $safeName = substr($safeName, 0, 50);
+    $filename = sprintf('%s-%s.%s', $safeName ?: 'event', uniqid(), $extension ?: 'jpg');
+    $destination = $uploadDir . $filename;
+
+    $moved = false;
+    if (move_uploaded_file($file['tmp_name'], $destination)) {
+        $moved = true;
+    } elseif (is_uploaded_file($file['tmp_name']) && rename($file['tmp_name'], $destination)) {
+        $moved = true;
+    } elseif (file_exists($file['tmp_name']) && copy($file['tmp_name'], $destination) && unlink($file['tmp_name'])) {
+        $moved = true;
+    }
+
+    if (!$moved) {
+        error_log('Görsel taşınamadı: ' . $file['tmp_name'] . ' -> ' . $destination);
+        return ['path' => $existingImageUrl !== '' ? $existingImageUrl : $defaultImage, 'error' => 'Görsel sunucuya taşınamadı.', 'file_uploaded' => true];
+    }
+
+    return ['path' => 'assets/images/' . $filename, 'error' => null, 'file_uploaded' => true];
+}
+
+function handle_uploaded_event_image(array $files, string $imageUrl = '', string $existingImageUrl = '', string $defaultImage = 'https://placehold.co/800x400/1a1a2e/7c3aed?text=Etkinlik'): string
+{
+    return get_uploaded_event_image_details($files, $imageUrl, $existingImageUrl, $defaultImage)['path'];
+}
+
+function upload_error_message(int $errorCode): string
+{
+    return match ($errorCode) {
+        UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'Yüklediğiniz görsel çok büyük. Lütfen daha küçük bir dosya seçin.',
+        UPLOAD_ERR_PARTIAL => 'Görsel yalnızca kısmen yüklendi. Lütfen tekrar deneyin.',
+        UPLOAD_ERR_NO_TMP_DIR => 'Geçici klasör bulunamadı.',
+        UPLOAD_ERR_CANT_WRITE => 'Sunucu üzerinde görsel yazılamadı.',
+        UPLOAD_ERR_EXTENSION => 'Görsel yüklenmesi eklenti tarafından engellendi.',
+        default => 'Görsel yüklenirken bir hata oluştu.'
+    };
+}
+
+/**
  * Etkinlik filtreleme için mevcut fiyat aralığını al
  * 
  * @param PDO $pdo Veritabanı bağlantısı
@@ -1468,4 +1716,134 @@ function get_event_price_range(PDO $pdo): array
         error_log('Fiyat aralığı alma hatası: ' . $e->getMessage());
         return ['min' => 0, 'max' => 0];
     }
+}
+
+/**
+ * Temel URL'i döndürür
+ *
+ * @return string Temel URL
+ */
+function base_url(string $path = ''): string
+{
+    $base = rtrim(BASE_URL, '/') . '/';
+    $path = ltrim($path, '/');
+    return $path === '' ? $base : $base . $path;
+}
+
+/**
+ * Göreli veya mutlak URL'leri resolve eder
+ *
+ * @param string $path
+ * @return string
+ */
+function resolve_url(string $path): string
+{
+    $trimmed = trim($path);
+    if ($trimmed === '') {
+        return '';
+    }
+
+    if (strpos($trimmed, '//') === 0) {
+        return $trimmed;
+    }
+
+    $parts = parse_url($trimmed);
+    if ($parts !== false && !empty($parts['scheme'])) {
+        return $trimmed;
+    }
+
+    return base_url($trimmed);
+}
+
+/**
+ * HTML-escape yardımcı fonksiyon
+ *
+ * @param mixed $value
+ * @return string
+ */
+function e($value): string
+{
+    return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+/**
+ * Status badge HTML döndürür
+ *
+ * @param string $status
+ * @return string
+ */
+function status_badge(string $status): string
+{
+    $map = [
+        'active'    => ['label' => 'Aktif', 'class' => 'badge-success'],
+        'cancelled' => ['label' => 'İptal', 'class' => 'badge-danger'],
+        'completed' => ['label' => 'Tamamlandı', 'class' => 'badge-warning'],
+        'draft'     => ['label' => 'Taslak', 'class' => 'badge-muted'],
+    ];
+
+    $s = strtolower($status);
+    $info = $map[$s] ?? ['label' => ucfirst($s), 'class' => 'badge-muted'];
+
+    return '<span class="badge ' . e($info['class']) . '">' . e($info['label']) . '</span>';
+}
+
+/**
+ * Flash mesaj ayarla
+ *
+ * @param string $name    Mesajın adı
+ * @param string $message Mesaj içeriği
+ * @param string $type    Mesaj tipi (success, error, warning, info)
+ * @return void
+ */
+function set_flash(string $a, string $b, ?string $c = null): void
+{
+    if (!isset($_SESSION['flash'])) {
+        $_SESSION['flash'] = [];
+    }
+
+    // Backwards-compatible: set_flash('success', 'Mesaj') veya set_flash('name','mesaj','type')
+    $commonTypes = ['success', 'error', 'warning', 'info'];
+
+    if (in_array($a, $commonTypes, true)) {
+        $type = $a;
+        $message = $b;
+        $name = $c ?? uniqid('flash_', true);
+    } else {
+        $name = $a;
+        $message = $b;
+        $type = $c ?? 'info';
+    }
+
+    $_SESSION['flash'][$name] = ['message' => $message, 'type' => $type];
+}
+
+/**
+ * Flash mesajı al ve sil
+ *
+ * @param string $name Mesajın adı
+ * @return array|null  Mesaj verisi (message, type) veya null
+ */
+function get_flash(?string $name = null): ?array
+{
+    if (empty($_SESSION['flash'])) {
+        return null;
+    }
+
+    if ($name !== null) {
+        if (isset($_SESSION['flash'][$name])) {
+            $flash = $_SESSION['flash'][$name];
+            unset($_SESSION['flash'][$name]);
+            return $flash;
+        }
+        return null;
+    }
+
+    // Eğer isim verilmemişse, ilk flash mesajı döndür ve sil
+    foreach ($_SESSION['flash'] as $key => $data) {
+        $flash = $data;
+        unset($_SESSION['flash'][$key]);
+        return $flash;
+    }
+
+    return null;
 }

@@ -2,6 +2,8 @@
    Bilet-Geç - Main Application JavaScript
    ============================================ */
 
+const APP_BASE = (document.body?.dataset?.baseUrl || '/ilterhoca/').replace(/\/?$/, '/');
+
 /* ============================================
    Toast Notification System
    ============================================ */
@@ -193,7 +195,7 @@ class ReservationTimer {
    API Helper
    ============================================ */
 class API {
-    static BASE = '/ilterhoca/api/';
+    static BASE = APP_BASE + 'api/';
 
     static async request(endpoint, options = {}) {
         const url = API.BASE + endpoint;
@@ -434,7 +436,7 @@ class FormValidator {
         });
 
         // Real-time validation on blur
-        const inputs = this.form.querySelectorAll('.form-control');
+        const inputs = this.form.querySelectorAll('.form-control, .form-input');
         inputs.forEach(input => {
             input.addEventListener('blur', () => {
                 this.validateField(input);
@@ -450,7 +452,7 @@ class FormValidator {
     validateAll() {
         this.errors = {};
         let isValid = true;
-        const inputs = this.form.querySelectorAll('.form-control[required], .form-control[data-validate]');
+        const inputs = this.form.querySelectorAll('.form-control[required], .form-control[data-validate], .form-input[required], .form-input[data-validate]');
 
         inputs.forEach(input => {
             if (!this.validateField(input)) {
@@ -628,11 +630,14 @@ class QuantitySelector {
    ============================================ */
 class SearchFilter {
     constructor() {
-        this.searchInput = document.getElementById('search-input');
+        this.searchInput = document.getElementById('search-input') || document.getElementById('hero-search-input');
         this.categoryBtns = document.querySelectorAll('[data-category-filter]');
         this.citySelect = document.getElementById('city-filter');
+        this.venueSelect = document.getElementById('venue-filter');
         this.dateInput = document.getElementById('date-filter');
+        this.sortSelect = document.getElementById('sort-filter');
         this.eventCards = document.querySelectorAll('[data-event-card]');
+        this.originalVenueOptions = this.venueSelect ? Array.from(this.venueSelect.querySelectorAll('option[data-city]')) : [];
         this.debounceTimer = null;
 
         if (this.eventCards.length > 0) {
@@ -662,12 +667,64 @@ class SearchFilter {
 
         // City filter
         if (this.citySelect) {
-            this.citySelect.addEventListener('change', () => this.applyFilters());
+            this.citySelect.addEventListener('change', () => {
+                if (this.venueSelect) {
+                    this.updateVenueOptions();
+                }
+                this.applyFilters();
+            });
+        }
+
+        if (this.venueSelect) {
+            this.venueSelect.addEventListener('change', () => this.applyFilters());
         }
 
         // Date filter
         if (this.dateInput) {
             this.dateInput.addEventListener('change', () => this.applyFilters());
+        }
+
+        if (this.sortSelect) {
+            this.sortSelect.addEventListener('change', () => this.applyFilters());
+        }
+
+        if (this.venueSelect) {
+            this.updateVenueOptions();
+        }
+
+        // Periodically refresh ordering to keep the nearest events first
+        window.setInterval(() => {
+            this.applyFilters();
+        }, 30000);
+    }
+
+    updateVenueOptions() {
+        if (!this.venueSelect || !this.citySelect) {
+            return;
+        }
+
+        const selectedCity = this.citySelect.value;
+        const options = this.originalVenueOptions;
+
+        if (!selectedCity) {
+            this.venueSelect.innerHTML = '<option value="">Önce şehir seçin</option>';
+            this.venueSelect.disabled = true;
+            return;
+        }
+
+        const matching = options.filter(opt => opt.dataset.city === selectedCity);
+        if (matching.length === 0) {
+            this.venueSelect.innerHTML = '<option value="">Bu şehirde mekan bulunamadı</option>';
+            this.venueSelect.disabled = true;
+            return;
+        }
+
+        const currentValue = this.venueSelect.value;
+        this.venueSelect.disabled = false;
+        this.venueSelect.innerHTML = '<option value="">Tüm Mekanlar</option>' + matching.map(opt => `<option value="${opt.value}" data-city="${opt.dataset.city}">${opt.textContent}</option>`).join('');
+
+        if (currentValue && matching.some(opt => opt.value === currentValue)) {
+            this.venueSelect.value = currentValue;
         }
     }
 
@@ -676,9 +733,12 @@ class SearchFilter {
         const activeCategory = document.querySelector('[data-category-filter].active');
         const categorySlug = activeCategory ? activeCategory.getAttribute('data-category-filter') : 'all';
         const selectedCity = this.citySelect ? this.citySelect.value : '';
+        const selectedVenue = this.venueSelect ? this.venueSelect.value : '';
         const selectedDate = this.dateInput ? this.dateInput.value : '';
+        const sortValueRaw = this.sortSelect ? this.sortSelect.value : 'date-asc';
+        const sortValue = sortValueRaw.replace('-', '_');
 
-        let visibleCount = 0;
+        let visibleCards = [];
 
         this.eventCards.forEach(card => {
             const title = (card.getAttribute('data-title') || '').toLowerCase();
@@ -704,19 +764,63 @@ class SearchFilter {
                 visible = false;
             }
 
-            // Date filter
-            if (selectedDate && date < selectedDate) {
+            // Venue filter
+            if (selectedVenue && venue !== selectedVenue.toLowerCase()) {
                 visible = false;
             }
 
+            // Date filter
+            if (selectedDate) {
+                const cardDate = new Date(date);
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+
+                if (selectedDate === 'today') {
+                    const tomorrow = new Date(today);
+                    tomorrow.setDate(tomorrow.getDate() + 1);
+                    if (cardDate < today || cardDate >= tomorrow) visible = false;
+                } else if (selectedDate === 'week') {
+                    const weekEnd = new Date(today);
+                    weekEnd.setDate(weekEnd.getDate() + 7);
+                    if (cardDate < today || cardDate > weekEnd) visible = false;
+                } else if (selectedDate === 'month') {
+                    const monthEnd = new Date(today);
+                    monthEnd.setDate(monthEnd.getDate() + 30);
+                    if (cardDate < today || cardDate > monthEnd) visible = false;
+                }
+            }
+
             card.style.display = visible ? '' : 'none';
-            if (visible) visibleCount++;
+            if (visible) visibleCards.push(card);
         });
+
+        if (visibleCards.length > 0) {
+            const grid = document.getElementById('events-grid');
+            visibleCards.sort((a, b) => {
+                const dateA = new Date(a.getAttribute('data-date'));
+                const dateB = new Date(b.getAttribute('data-date'));
+
+                switch (sortValue) {
+                    case 'price_asc':
+                        return parseFloat(a.getAttribute('data-price')) - parseFloat(b.getAttribute('data-price'));
+                    case 'price_desc':
+                        return parseFloat(b.getAttribute('data-price')) - parseFloat(a.getAttribute('data-price'));
+                    case 'date_desc':
+                        return dateB - dateA;
+                    case 'popularity':
+                        return 0;
+                    case 'date_asc':
+                    default:
+                        return dateA - dateB;
+                }
+            });
+            visibleCards.forEach(card => grid.appendChild(card));
+        }
 
         // Show/hide empty state
         const emptyState = document.getElementById('no-results');
         if (emptyState) {
-            emptyState.style.display = visibleCount === 0 ? 'block' : 'none';
+            emptyState.style.display = visibleCards.length === 0 ? 'block' : 'none';
         }
     }
 }
@@ -1145,6 +1249,119 @@ function fallbackCopy(text) {
     document.body.removeChild(textarea);
 }
 
+function showFormInputError(input, message) {
+    if (!input) return;
+    input.classList.add('is-invalid');
+    input.classList.remove('is-valid');
+
+    const existingError = input.parentElement.querySelector('.invalid-feedback');
+    if (existingError) {
+        existingError.remove();
+    }
+
+    const errorEl = document.createElement('div');
+    errorEl.className = 'invalid-feedback';
+    errorEl.textContent = message;
+    input.parentElement.appendChild(errorEl);
+}
+
+function clearFormInputError(input) {
+    if (!input) return;
+    input.classList.remove('is-invalid');
+
+    const existingError = input.parentElement.querySelector('.invalid-feedback');
+    if (existingError) {
+        existingError.remove();
+    }
+
+    if (input.value.trim()) {
+        input.classList.add('is-valid');
+    } else {
+        input.classList.remove('is-valid');
+    }
+}
+
+function clearEventDateTimeErrors(form) {
+    ['event_date_date', 'event_date_time', 'end_date_date', 'end_date_time'].forEach(name => {
+        const input = form.querySelector(`[name="${name}"]`);
+        if (input) {
+            clearFormInputError(input);
+        }
+    });
+}
+
+function validateAdminEventDateTime(form) {
+    const startDate = form.querySelector('[name="event_date_date"]');
+    const startTime = form.querySelector('[name="event_date_time"]');
+    const endDate = form.querySelector('[name="end_date_date"]');
+    const endTime = form.querySelector('[name="end_date_time"]');
+
+    if (!startDate || !startTime) {
+        return true;
+    }
+
+    clearEventDateTimeErrors(form);
+    let isValid = true;
+
+    const startDateValue = startDate.value.trim();
+    const startTimeValue = startTime.value.trim();
+    let startDateTime = null;
+
+    if (!startDateValue) {
+        showFormInputError(startDate, 'Başlangıç tarihi zorunludur.');
+        isValid = false;
+    }
+    if (!startTimeValue) {
+        showFormInputError(startTime, 'Başlangıç saati zorunludur.');
+        isValid = false;
+    }
+
+    if (startDateValue && startTimeValue) {
+        startDateTime = new Date(`${startDateValue}T${startTimeValue}`);
+        if (Number.isNaN(startDateTime.getTime())) {
+            showFormInputError(startDate, 'Geçersiz başlangıç tarihi/saat.');
+            isValid = false;
+        }
+    }
+
+    if (startDateTime) {
+        const now = new Date();
+        if (startDateTime < now) {
+            showFormInputError(startDate, 'Etkinlik tarihi bugünden önce olamaz.');
+            showFormInputError(startTime, 'Etkinlik saati geçmiş olamaz.');
+            isValid = false;
+        }
+    }
+
+    const endDateValue = endDate ? endDate.value.trim() : '';
+    const endTimeValue = endTime ? endTime.value.trim() : '';
+
+    if ((endDate && endDateValue) || (endTime && endTimeValue)) {
+        if (endDate && !endDateValue) {
+            showFormInputError(endDate, 'Bitiş tarihi girilmelidir.');
+            isValid = false;
+        }
+        if (endTime && !endTimeValue) {
+            showFormInputError(endTime, 'Bitiş saati girilmelidir.');
+            isValid = false;
+        }
+
+        if (endDateValue && endTimeValue) {
+            const endDateTime = new Date(`${endDateValue}T${endTimeValue}`);
+            if (Number.isNaN(endDateTime.getTime())) {
+                if (endDate) showFormInputError(endDate, 'Geçersiz bitiş tarihi/saat.');
+                isValid = false;
+            } else if (startDateTime && endDateTime < startDateTime) {
+                if (endDate) showFormInputError(endDate, 'Bitiş tarihi başlangıçtan sonra olmalıdır.');
+                if (endTime) showFormInputError(endTime, 'Bitiş tarihi başlangıçtan sonra olmalıdır.');
+                isValid = false;
+            }
+        }
+    }
+
+    return isValid;
+}
+
 /* ============================================
    Format Helpers
    ============================================ */
@@ -1258,6 +1475,125 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
     });
+
+    // ===== Basit Görsel Yükleme Kontrolü =====
+    const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
+
+    // Dosya seçildiğinde bilgilendirme göster
+    document.addEventListener('change', (e) => {
+        const input = e.target.closest('input[type="file"][name="image_file"]');
+        if (!input || !input.files || input.files.length === 0) return;
+
+        const file = input.files[0];
+        const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+        const isLarge = file.size > MAX_FILE_SIZE;
+
+        if (isLarge) {
+            toast.warning(`⚠️ Dosya çok büyük (${sizeMB} MB). Sunucu otomatik olarak boyutlandıracak.`);
+        } else if (file.size > 5 * 1024 * 1024) {
+            toast.info(`📸 Dosya boyutu: ${sizeMB} MB`);
+        }
+    });
+
+    // Normal form submit
+    document.addEventListener('submit', (e) => {
+        const form = e.target.closest('form');
+        if (!form) return;
+        if (form.matches('form[data-ajax="true"]')) {
+            return; // AJAX formları ayrı işle
+        }
+
+        if (!validateAdminEventDateTime(form)) {
+            e.preventDefault();
+            return;
+        }
+
+        const fileInput = form.querySelector('input[type="file"][name="image_file"]');
+        if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+            return; // Dosya yok, normal submit yap
+        }
+
+        const file = fileInput.files[0];
+        if (file.size > MAX_FILE_SIZE) {
+            e.preventDefault();
+            toast.error(`Dosya çok büyük (maks: 20 MB). Lütfen daha küçük bir dosya seçin.`);
+            return;
+        }
+
+        // Dosya yolunda, normal submit
+        form.submit();
+    });
+
+    // AJAX form submit (modal formları)
+    document.addEventListener('submit', (e) => {
+        const form = e.target.closest('form[data-ajax="true"]');
+        if (!form) return;
+        e.preventDefault();
+
+        const fileInput = form.querySelector('input[type="file"][name="image_file"]');
+        if (fileInput && fileInput.files && fileInput.files[0]) {
+            const file = fileInput.files[0];
+            if (file.size > MAX_FILE_SIZE) {
+                toast.error(`Dosya çok büyük (maks: 20 MB).`);
+                return;
+            }
+        }
+
+        const modal = form.closest('.modal-overlay');
+        const submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.disabled = true;
+
+        const formData = new FormData(form);
+
+        const formAction = form.getAttribute('action') || (typeof APP_BASE !== 'undefined' ? APP_BASE + 'admin/manage_events.php' : '');
+        fetch(formAction, {
+            method: (form.getAttribute('method') || 'POST').toUpperCase(),
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            credentials: 'same-origin'
+        }).then(res => {
+            const contentType = res.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                throw new Error('Sunucudan geçersiz yanıt alındı.');
+            }
+            return res.json();
+        })
+        .then(data => {
+            if (data.success) {
+                toast.success('Etkinlik oluşturuldu.');
+                if (modal) ModalManager.close(modal.id);
+                window.location.reload();
+            } else {
+                const msg = (data.errors && data.errors.length) ? data.errors.join('\n') : (data.message || 'Bir hata oluştu.');
+                toast.error(msg);
+            }
+        }).catch(err => {
+            console.error(err);
+            toast.error('Sunucuya bağlanırken hata oluştu.');
+        }).finally(() => {
+            if (submitBtn) submitBtn.disabled = false;
+        });
+    });
+
+    // Event admin search filter
+    const eventSearchInput = document.getElementById('event-search');
+    if (eventSearchInput) {
+        eventSearchInput.addEventListener('input', (e) => {
+            const searchTerm = e.target.value.toLowerCase().trim();
+            const eventItems = document.querySelectorAll('.event-list-item');
+            
+            eventItems.forEach(item => {
+                const searchText = item.getAttribute('data-search-text') || '';
+                if (searchText.includes(searchTerm) || searchTerm === '') {
+                    item.style.display = '';
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+        });
+    }
 
     // Console greeting
     console.log(

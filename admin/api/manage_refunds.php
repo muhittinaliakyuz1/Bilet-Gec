@@ -7,11 +7,13 @@
 
 define('ALLOWED_ACCESS', true);
 
-require_once __DIR__ . '/../includes/auth.php';
-require_once __DIR__ . '/../includes/refund_functions.php';
+require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/functions.php';
+require_once __DIR__ . '/../../includes/refund_functions.php';
+require_once __DIR__ . '/../../includes/activity_log.php';
 
 start_secure_session();
-require_admin();
+require_panel();
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -71,6 +73,18 @@ try {
         exit;
     }
 
+    // Firma kapsamı kontrolü
+    if (!is_superadmin()) {
+        $evStmt = $pdo->prepare('SELECT created_by FROM events WHERE id = ?');
+        $evStmt->execute([$refund['event_id']]);
+        $evRow = $evStmt->fetch();
+        if (!$evRow || (int)$evRow['created_by'] !== $admin_id) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Bu iade talebine erişim yetkiniz yok.']);
+            exit;
+        }
+    }
+
     switch ($action) {
         case 'approve':
             $refund_method = isset($input['refund_method']) ? trim($input['refund_method']) : 'card';
@@ -126,6 +140,8 @@ try {
                 send_mail_message($email, $subject, $message);
             }
 
+            log_activity($pdo, $admin_id, 'refund_approve', 'refund', $refund_id, ['method' => $refund_method]);
+
             echo json_encode([
                 'success' => true,
                 'refund' => $result,
@@ -176,6 +192,8 @@ try {
                 send_mail_message($email, $subject, $message);
             }
 
+            log_activity($pdo, $admin_id, 'refund_reject', 'refund', $refund_id, ['reason' => $rejection_reason]);
+
             echo json_encode([
                 'success' => true,
                 'refund' => $result,
@@ -189,7 +207,7 @@ try {
             $result = complete_refund($pdo, $refund_id, $admin_id, $transaction_id);
             if ($result === false) {
                 http_response_code(400);
-                echo json_encode(['success' => false, 'message' => 'İade işlemi tamamlanamadı.']);
+                echo json_encode(['success' => false, 'message' => 'İade işlemi tamamlanamadı. Talebin durumu "Onaylanan" olmalıdır.']);
                 exit;
             }
 
@@ -224,6 +242,8 @@ try {
 
                 send_mail_message($email, $subject, $message);
             }
+
+            log_activity($pdo, $admin_id, 'refund_complete', 'refund', $refund_id, ['transaction_id' => $transaction_id]);
 
             echo json_encode([
                 'success' => true,

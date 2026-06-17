@@ -90,7 +90,7 @@ require_once __DIR__ . '/includes/header.php';
 <!-- Event Header -->
 <section class="event-hero">
     <div class="event-hero-image">
-        <img src="<?php echo htmlspecialchars($event['image_url']); ?>" alt="<?php echo htmlspecialchars($event['title']); ?>">
+        <img src="<?php echo htmlspecialchars(resolve_url($event['image_url'])); ?>" alt="<?php echo htmlspecialchars($event['title']); ?>" onerror="this.src='https://placehold.co/1200x600/1a1a2e/7c3aed?text=Görsel';">
         <div class="event-hero-overlay"></div>
     </div>
     <div class="event-hero-content container">
@@ -192,23 +192,43 @@ require_once __DIR__ . '/includes/header.php';
                     </div>
 
                     <?php if ($remaining > 0 && $is_logged_in): ?>
-                    <div class="ticket-purchase-form" id="purchase-form">
-                        <div class="quantity-selector">
-                            <label>Adet:</label>
-                            <div class="quantity-controls">
-                                <button type="button" class="qty-btn qty-minus" id="qty-minus">−</button>
-                                <input type="number" id="quantity" class="qty-input" value="1" min="1" max="<?php echo min($remaining, 10); ?>">
-                                <button type="button" class="qty-btn qty-plus" id="qty-plus">+</button>
+                        <?php if (is_panel_user()): ?>
+                        <div class="ticket-purchase-form" id="purchase-form">
+                            <div class="quantity-selector" style="opacity: 0.5; pointer-events: none;">
+                                <label>Adet:</label>
+                                <div class="quantity-controls">
+                                    <button type="button" class="qty-btn qty-minus" disabled>−</button>
+                                    <input type="number" class="qty-input" value="1" disabled style="background: transparent;">
+                                    <button type="button" class="qty-btn qty-plus" disabled>+</button>
+                                </div>
                             </div>
+                            <div class="ticket-total">
+                                <span class="total-label">Toplam:</span>
+                                <span class="total-price">₺<?php echo number_format((float)$event['price'], 2, ',', '.'); ?></span>
+                            </div>
+                            <button type="button" class="btn btn-disabled btn-block" disabled style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); cursor: not-allowed;">
+                                🚫 Firma hesabında bilet alamazsınız
+                            </button>
                         </div>
-                        <div class="ticket-total">
-                            <span class="total-label">Toplam:</span>
-                            <span class="total-price" id="total-price">₺<?php echo number_format((float)$event['price'], 2, ',', '.'); ?></span>
+                        <?php else: ?>
+                        <div class="ticket-purchase-form" id="purchase-form">
+                            <div class="quantity-selector">
+                                <label>Adet:</label>
+                                <div class="quantity-controls">
+                                    <button type="button" class="qty-btn qty-minus" id="qty-minus">−</button>
+                                    <input type="number" id="quantity" class="qty-input" value="1" min="1" max="<?php echo min($remaining, 10); ?>">
+                                    <button type="button" class="qty-btn qty-plus" id="qty-plus">+</button>
+                                </div>
+                            </div>
+                            <div class="ticket-total">
+                                <span class="total-label">Toplam:</span>
+                                <span class="total-price" id="total-price">₺<?php echo number_format((float)$event['price'], 2, ',', '.'); ?></span>
+                            </div>
+                            <button type="button" class="btn btn-primary btn-block" id="reserve-btn">
+                                🎫 Rezerve Et
+                            </button>
                         </div>
-                        <button type="button" class="btn btn-primary btn-block" id="reserve-btn">
-                            🎫 Rezerve Et
-                        </button>
-                    </div>
+                        <?php endif; ?>
                     <?php elseif ($remaining <= 0): ?>
                     <div class="ticket-sold-out">
                         <button class="btn btn-disabled btn-block" disabled>🚫 Biletler Tükendi</button>
@@ -837,7 +857,7 @@ document.addEventListener('DOMContentLoaded', function() {
             
             <!-- Buttons -->
             <div class="ticket-login-actions">
-                <a href="login.php?return=<?php echo urlencode('event.php?id=' . $event_id); ?>" class="btn btn-primary btn-block">
+                <a href="auth/login.php?return=<?php echo urlencode('event.php?id=' . $event_id); ?>" class="btn btn-primary btn-block">
                     🚪 Giriş Yap / Kayıt Ol
                 </a>
                 <p class="ticket-login-or">veya</p>

@@ -6,104 +6,89 @@
 define('ALLOWED_ACCESS', true);
 
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/refund_functions.php';
 
 start_secure_session();
-require_admin();
+require_panel();
 
 global $pdo;
 
 $page_title = "İade Yönetimi";
 $current_page = "manage_refunds";
 
-// Get filter parameter
+$firma_filter = is_superadmin() ? null : get_current_user_id();
+
 $status_filter = isset($_GET['status']) ? trim($_GET['status']) : '';
 $valid_statuses = ['pending', 'approved', 'rejected', 'completed'];
 if (!empty($status_filter) && !in_array($status_filter, $valid_statuses)) {
     $status_filter = '';
 }
 
-// Get pagination
 $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
 $limit = 20;
 $offset = ($page - 1) * $limit;
 
-// Fetch refunds
-$refunds = get_all_refunds($pdo, $status_filter, $limit, $offset);
+$refunds = get_all_refunds($pdo, $status_filter, $limit, $offset, $firma_filter);
+$stats = get_refund_statistics($pdo, $firma_filter);
 
-// Get statistics
-$stats = get_refund_statistics($pdo);
-
-// Get total count
-$sql = 'SELECT COUNT(*) as total FROM refunds WHERE 1=1';
-if (!empty($status_filter)) {
-    $sql .= ' AND status = ?';
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([$status_filter]);
+if ($firma_filter !== null) {
+    $countSql = 'SELECT COUNT(*) as total FROM refunds r JOIN events e ON r.event_id = e.id WHERE e.created_by = ?';
+    $countParams = [$firma_filter];
+    if (!empty($status_filter)) {
+        $countSql .= ' AND r.status = ?';
+        $countParams[] = $status_filter;
+    }
+    $stmt = $pdo->prepare($countSql);
+    $stmt->execute($countParams);
 } else {
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute();
+    $countSql = 'SELECT COUNT(*) as total FROM refunds WHERE 1=1';
+    if (!empty($status_filter)) {
+        $countSql .= ' AND status = ?';
+        $stmt = $pdo->prepare($countSql);
+        $stmt->execute([$status_filter]);
+    } else {
+        $stmt = $pdo->prepare($countSql);
+        $stmt->execute();
+    }
 }
 $total_count = (int)$stmt->fetch()['total'];
 $total_pages = ceil($total_count / $limit);
 
 require_once __DIR__ . '/../includes/header.php';
+require_once __DIR__ . '/_sidebar.php';
 ?>
 
-<section class="manage-refunds-section">
-    <div class="container">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
-            <h1 class="page-title">💳 İade Yönetimi</h1>
-            <div style="font-size: 0.9rem; color: rgba(255,255,255,0.7);">
-                Toplam İade Talebi: <strong><?php echo $total_count; ?></strong>
-            </div>
+<div class="admin-content">
+    <div class="refunds-page-header">
+        <h1 class="page-title">💳 İade Yönetimi</h1>
+        <div class="refunds-total">Toplam İade Talebi: <strong><?php echo $total_count; ?></strong></div>
+    </div>
+
+    <div class="refund-stats-grid">
+        <div class="refund-stat-card refund-stat-pending">
+            <div class="refund-stat-label">Beklemede</div>
+            <div class="refund-stat-value"><?php echo (int)$stats['pending']['count']; ?></div>
+            <div class="refund-stat-amount">₺<?php echo number_format($stats['pending']['total'], 2, ',', '.'); ?></div>
         </div>
-
-        <!-- Statistics Cards -->
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px;">
-            <div class="glass-card" style="padding: 20px; text-align: center; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3);">
-                <div style="font-size: 0.9rem; color: rgba(255,255,255,0.7); margin-bottom: 10px;">Beklemede</div>
-                <div style="font-size: 1.8rem; font-weight: bold; color: #60a5fa;">
-                    <?php echo (int)$stats['pending']['count']; ?>
-                </div>
-                <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5); margin-top: 5px;">
-                    ₺<?php echo number_format($stats['pending']['total'], 2, ',', '.'); ?>
-                </div>
-            </div>
-
-            <div class="glass-card" style="padding: 20px; text-align: center; background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3);">
-                <div style="font-size: 0.9rem; color: rgba(255,255,255,0.7); margin-bottom: 10px;">Onaylanan</div>
-                <div style="font-size: 1.8rem; font-weight: bold; color: #4ade80;">
-                    <?php echo (int)$stats['approved']['count']; ?>
-                </div>
-                <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5); margin-top: 5px;">
-                    ₺<?php echo number_format($stats['approved']['total'], 2, ',', '.'); ?>
-                </div>
-            </div>
-
-            <div class="glass-card" style="padding: 20px; text-align: center; background: rgba(6, 182, 212, 0.1); border: 1px solid rgba(6, 182, 212, 0.3);">
-                <div style="font-size: 0.9rem; color: rgba(255,255,255,0.7); margin-bottom: 10px;">Tamamlanan</div>
-                <div style="font-size: 1.8rem; font-weight: bold; color: #22d3ee;">
-                    <?php echo (int)$stats['completed']['count']; ?>
-                </div>
-                <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5); margin-top: 5px;">
-                    ₺<?php echo number_format($stats['completed']['total'], 2, ',', '.'); ?>
-                </div>
-            </div>
-
-            <div class="glass-card" style="padding: 20px; text-align: center; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3);">
-                <div style="font-size: 0.9rem; color: rgba(255,255,255,0.7); margin-bottom: 10px;">Reddedilen</div>
-                <div style="font-size: 1.8rem; font-weight: bold; color: #f87171;">
-                    <?php echo (int)$stats['rejected']['count']; ?>
-                </div>
-                <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5); margin-top: 5px;">
-                    ₺<?php echo number_format($stats['rejected']['total'], 2, ',', '.'); ?>
-                </div>
-            </div>
+        <div class="refund-stat-card refund-stat-approved">
+            <div class="refund-stat-label">Onaylanan</div>
+            <div class="refund-stat-value"><?php echo (int)$stats['approved']['count']; ?></div>
+            <div class="refund-stat-amount">₺<?php echo number_format($stats['approved']['total'], 2, ',', '.'); ?></div>
         </div>
+        <div class="refund-stat-card refund-stat-completed">
+            <div class="refund-stat-label">Tamamlanan</div>
+            <div class="refund-stat-value"><?php echo (int)$stats['completed']['count']; ?></div>
+            <div class="refund-stat-amount">₺<?php echo number_format($stats['completed']['total'], 2, ',', '.'); ?></div>
+        </div>
+        <div class="refund-stat-card refund-stat-rejected">
+            <div class="refund-stat-label">Reddedilen</div>
+            <div class="refund-stat-value"><?php echo (int)$stats['rejected']['count']; ?></div>
+            <div class="refund-stat-amount">₺<?php echo number_format($stats['rejected']['total'], 2, ',', '.'); ?></div>
+        </div>
+    </div>
 
-        <!-- Filter Buttons -->
-        <div style="margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+    <div class="refund-filter-bar">
             <a href="?status=" class="btn <?php echo empty($status_filter) ? 'btn-primary' : 'btn-outline'; ?> btn-sm">
                 Tümü
             </a>
@@ -121,24 +106,23 @@ require_once __DIR__ . '/../includes/header.php';
             </a>
         </div>
 
-        <!-- Refunds Table -->
         <?php if (empty($refunds)): ?>
-            <div class="empty-state glass-card" style="padding: 60px 20px;">
+            <div class="empty-state glass-card">
                 <div class="empty-icon">📋</div>
-                <p>İade talebiniz bulunmamaktadır.</p>
+                <p>İade talebi bulunmamaktadır.</p>
             </div>
         <?php else: ?>
-            <div class="glass-card" style="overflow-x: auto; padding: 0;">
-                <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+            <div class="glass-card admin-table-wrap">
+                <table class="admin-table refunds-table">
                     <thead>
-                        <tr style="border-bottom: 2px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05);">
-                            <th style="padding: 15px; text-align: left; color: rgba(255,255,255,0.7);">Kullanıcı</th>
-                            <th style="padding: 15px; text-align: left; color: rgba(255,255,255,0.7);">Etkinlik</th>
-                            <th style="padding: 15px; text-align: left; color: rgba(255,255,255,0.7);">Bilet Kodu</th>
-                            <th style="padding: 15px; text-align: right; color: rgba(255,255,255,0.7);">Tutar</th>
-                            <th style="padding: 15px; text-align: center; color: rgba(255,255,255,0.7);">Durum</th>
-                            <th style="padding: 15px; text-align: center; color: rgba(255,255,255,0.7);">Tarih</th>
-                            <th style="padding: 15px; text-align: center; color: rgba(255,255,255,0.7);">İşlem</th>
+                        <tr>
+                            <th>Kullanıcı</th>
+                            <th>Etkinlik</th>
+                            <th>Bilet Kodu</th>
+                            <th>Tutar</th>
+                            <th>Durum</th>
+                            <th>Tarih</th>
+                            <th>İşlem</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -151,38 +135,27 @@ require_once __DIR__ . '/../includes/header.php';
                             ];
                             $status_info = $status_colors[$refund['status']] ?? $status_colors['pending'];
                         ?>
-                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                <td style="padding: 15px;">
-                                    <div style="font-weight: 500; color: #fff;"><?php echo htmlspecialchars($refund['full_name']); ?></div>
-                                    <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5);"><?php echo htmlspecialchars($refund['email']); ?></div>
+                            <tr>
+                                <td>
+                                    <div class="cell-primary"><?php echo htmlspecialchars($refund['full_name']); ?></div>
+                                    <div class="cell-secondary"><?php echo htmlspecialchars($refund['email']); ?></div>
                                 </td>
-                                <td style="padding: 15px;">
-                                    <div style="color: #fff;"><?php echo htmlspecialchars($refund['event_title']); ?></div>
-                                    <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5);">
-                                        <?php echo date('d M Y', strtotime($refund['event_date'])); ?>
-                                    </div>
+                                <td>
+                                    <div class="cell-primary"><?php echo htmlspecialchars($refund['event_title']); ?></div>
+                                    <div class="cell-secondary"><?php echo date('d M Y', strtotime($refund['event_date'])); ?></div>
                                 </td>
-                                <td style="padding: 15px;">
-                                    <code style="background: rgba(0,0,0,0.3); padding: 5px 10px; border-radius: 4px; font-size: 0.85rem;">
-                                        <?php echo htmlspecialchars($refund['ticket_code']); ?>
-                                    </code>
-                                </td>
-                                <td style="padding: 15px; text-align: right; font-weight: 500; color: #4ade80;">
-                                    ₺<?php echo number_format($refund['refund_amount'], 2, ',', '.'); ?>
-                                </td>
-                                <td style="padding: 15px; text-align: center;">
-                                    <span style="background: <?php echo $status_info['bg']; ?>; border: 1px solid <?php echo $status_info['border']; ?>; padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; display: inline-block;">
+                                <td><code class="ticket-code"><?php echo htmlspecialchars($refund['ticket_code']); ?></code></td>
+                                <td class="text-right text-success">₺<?php echo number_format($refund['refund_amount'], 2, ',', '.'); ?></td>
+                                <td class="text-center">
+                                    <span class="refund-status-badge refund-status-<?php echo e($refund['status']); ?>">
                                         <?php echo $status_info['label']; ?>
                                     </span>
                                 </td>
-                                <td style="padding: 15px; text-align: center; font-size: 0.85rem; color: rgba(255,255,255,0.6);">
-                                    <?php echo date('d M Y H:i', strtotime($refund['requested_at'])); ?>
-                                </td>
-                                <td style="padding: 15px; text-align: center;">
-                                    <button class="refund-action-btn" 
+                                <td class="text-center cell-secondary"><?php echo date('d M Y H:i', strtotime($refund['requested_at'])); ?></td>
+                                <td class="text-center">
+                                    <button class="btn btn-sm btn-primary refund-action-btn" 
                                             data-refund-id="<?php echo (int)$refund['id']; ?>"
-                                            data-status="<?php echo htmlspecialchars($refund['status']); ?>"
-                                            style="padding: 6px 12px; background: rgba(59, 130, 246, 0.3); border: 1px solid rgba(59, 130, 246, 0.5); color: #60a5fa; border-radius: 6px; cursor: pointer; font-size: 0.85rem;">
+                                            data-status="<?php echo htmlspecialchars($refund['status']); ?>">
                                         Yönet
                                     </button>
                                 </td>
@@ -192,9 +165,8 @@ require_once __DIR__ . '/../includes/header.php';
                 </table>
             </div>
 
-            <!-- Pagination -->
             <?php if ($total_pages > 1): ?>
-                <div style="margin-top: 20px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap;">
+                <div class="pagination-bar">
                     <?php if ($page > 1): ?>
                         <a href="?page=1<?php echo !empty($status_filter) ? '&status=' . $status_filter : ''; ?>" class="btn btn-outline btn-sm">«</a>
                         <a href="?page=<?php echo $page - 1; ?><?php echo !empty($status_filter) ? '&status=' . $status_filter : ''; ?>" class="btn btn-outline btn-sm">‹</a>
@@ -214,12 +186,11 @@ require_once __DIR__ . '/../includes/header.php';
                 </div>
             <?php endif; ?>
         <?php endif; ?>
-    </div>
-</section>
+</div>
 
 <!-- Refund Action Modal -->
-<div id="refund-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center;">
-    <div class="glass-card" style="max-width: 500px; width: 90%; padding: 30px; max-height: 90vh; overflow-y: auto;">
+<div id="refund-modal" class="refund-modal-overlay">
+    <div class="glass-card refund-modal-card">
         <h2 id="modal-title" style="margin-top: 0; margin-bottom: 20px;">İade Talebini Yönet</h2>
         
         <div id="pending-actions">
@@ -250,8 +221,9 @@ require_once __DIR__ . '/../includes/header.php';
         <div id="approved-actions" style="display: none;">
             <p style="margin-bottom: 15px; color: rgba(255,255,255,0.8);">Bu iade talebini tamamlandı olarak işaretle:</p>
             <div style="margin-bottom: 15px;">
-                <label style="display: block; margin-bottom: 8px; color: rgba(255,255,255,0.8);">İşlem ID (İsteğe Bağlı):</label>
-                <input id="transaction-id" type="text" placeholder="Transaction ID..." style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.3); color: #fff;">
+                <label style="display: block; margin-bottom: 8px; color: rgba(255,255,255,0.8);">Ödeme Referans No (Opsiyonel):</label>
+                <input id="refund-transaction-id" type="text" placeholder="Banka veya ödeme sağlayıcı referans numarası..." style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.3); color: #fff;">
+                <small style="display: block; margin-top: 6px; color: rgba(255,255,255,0.55);">Boş bırakabilirsiniz; iade yine de tamamlanır.</small>
             </div>
             <button class="btn btn-primary" onclick="completeRefund()" style="width: 100%;">💳 Tamamla</button>
         </div>
@@ -310,7 +282,7 @@ function approveRefund() {
     const method = document.getElementById('refund-method').value;
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 
-    fetch('/ilterhoca/admin/api/manage_refunds.php', {
+    fetch(APP_BASE + 'admin/api/manage_refunds.php', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken},
@@ -333,7 +305,7 @@ function rejectRefund() {
     const reason = document.getElementById('rejection-reason').value;
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 
-    fetch('/ilterhoca/admin/api/manage_refunds.php', {
+    fetch(APP_BASE + 'admin/api/manage_refunds.php', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken},
@@ -353,10 +325,11 @@ function rejectRefund() {
 }
 
 function completeRefund() {
-    const transactionId = document.getElementById('transaction-id').value;
+    const transactionInput = document.getElementById('refund-transaction-id');
+    const transactionId = transactionInput ? transactionInput.value.trim() : '';
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 
-    fetch('/ilterhoca/admin/api/manage_refunds.php', {
+    fetch(APP_BASE + 'admin/api/manage_refunds.php', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken},
@@ -365,7 +338,12 @@ function completeRefund() {
             refund_id: currentRefundId,
             transaction_id: transactionId
         })
-    }).then(r => r.json()).then(data => {
+    }).then(async (r) => {
+        const data = await r.json().catch(() => null);
+        if (!data) {
+            alert('❌ Sunucudan geçersiz yanıt alındı.');
+            return;
+        }
         if (data.success) {
             alert('✅ ' + data.message);
             location.reload();
@@ -384,4 +362,5 @@ document.getElementById('refund-modal').addEventListener('click', (e) => {
 function hidRejectForm() { hideRejectForm(); }
 </script>
 
+<?php require_once __DIR__ . '/_sidebar_footer.php'; ?>
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

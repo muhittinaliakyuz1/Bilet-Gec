@@ -18,9 +18,23 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- Main Stylesheet -->
-    <link rel="stylesheet" href="/ilterhoca/assets/css/style.css?v=<?= time() ?>">
+    <link rel="stylesheet" href="<?= defined('BASE_URL') ? BASE_URL : '/ilterhoca/' ?>assets/css/common.css?v=<?= time() ?>">
+    <?php
+        $page_css = '';
+        if (!empty($current_page)) {
+            $page_css = preg_replace('/[^a-z0-9_-]/', '', strtolower($current_page));
+        }
+        $page_css_file = __DIR__ . '/../assets/css/pages/' . $page_css . '.css';
+    ?>
+    <?php if ($page_css && file_exists($page_css_file)): ?>
+        <link rel="stylesheet" href="<?= (defined('BASE_URL') ? BASE_URL : '/ilterhoca/') ?>assets/css/pages/<?= htmlspecialchars($page_css) ?>.css?v=<?= time() ?>">
+    <?php endif; ?>
 </head>
-<body data-page="<?= htmlspecialchars($current_page ?? 'home') ?>">
+<?php
+$admin_panel_pages = ['admin', 'manage_events', 'manage_refunds', 'manage_users', 'activity_logs'];
+$is_admin_panel = in_array($current_page ?? '', $admin_panel_pages, true);
+?>
+<body class="<?= $is_admin_panel ? 'admin-panel' : '' ?>" data-page="<?= htmlspecialchars($current_page ?? 'home') ?>" data-base-url="<?= htmlspecialchars(defined('BASE_URL') ? BASE_URL : '/ilterhoca/') ?>">
 
 <!-- Navigation -->
 <nav class="navbar">
@@ -39,43 +53,61 @@
 
         <!-- Navigation Links -->
         <div class="navbar-nav">
-            <a href="/ilterhoca/" class="nav-link <?= ($current_page ?? '') === 'home' ? 'active' : '' ?>">Ana Sayfa</a>
-            <a href="/ilterhoca/#events" class="nav-link <?= ($current_page ?? '') === 'events' ? 'active' : '' ?>">Etkinlikler</a>
-
-            <?php if (isset($_SESSION['user_id'])): ?>
-                <!-- Logged In User Links -->
-                <a href="/ilterhoca/my_tickets.php" class="nav-link <?= ($current_page ?? '') === 'my_tickets' ? 'active' : '' ?>">Biletlerim</a>
-
+            <?php if (function_exists('is_panel_user') && is_panel_user()): ?>
+                <?php $panel_nav_label = is_superadmin() ? 'Admin Paneli' : 'Firma Paneli';
+                      $top_nav_events_url = '/ilterhoca/events.php'; ?>
+                <a href="/ilterhoca/admin/" class="nav-link <?= ($current_page ?? '') === 'admin' ? 'active' : '' ?>">
+                    ⚙️ <?= htmlspecialchars($panel_nav_label) ?>
+                </a>
+                <a href="<?= $top_nav_events_url ?>" class="nav-link <?= ($current_page ?? '') === 'events' ? 'active' : '' ?>">
+                    📅 Etkinlikler
+                </a>
                 <div class="nav-actions">
-                    <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
-                        <a href="/ilterhoca/admin/" class="btn btn-sm btn-secondary <?= ($current_page ?? '') === 'admin' ? 'active' : '' ?>">
-                            ⚙️ Admin Panel
-                        </a>
-                    <?php endif; ?>
-
-                    <!-- User Menu Dropdown -->
                     <div class="user-menu">
                         <button class="user-menu-trigger" type="button">
                             <span class="user-avatar">
-                                <?= mb_strtoupper(mb_substr($_SESSION['full_name'] ?? 'U', 0, 1, 'UTF-8'), 'UTF-8') ?>
+                                <?= mb_strtoupper(mb_substr($_SESSION['full_name'] ?? 'A', 0, 1, 'UTF-8'), 'UTF-8') ?>
                             </span>
                             <span><?= htmlspecialchars($_SESSION['full_name'] ?? 'Kullanıcı') ?></span>
                             <span style="font-size:0.6rem;">▼</span>
                         </button>
                         <div class="user-dropdown">
-                            <a href="/ilterhoca/profile.php">👤 Profilim</a>
-                            <a href="/ilterhoca/my_tickets.php">🎫 Biletlerim</a>
+                            <a href="/ilterhoca/admin/">⚙️ <?= htmlspecialchars($panel_nav_label) ?></a>
                             <div class="dropdown-divider"></div>
-                            <a href="/ilterhoca/logout.php" style="color: var(--danger);">🚪 Çıkış Yap</a>
+                            <a href="/ilterhoca/auth/logout.php" style="color: var(--danger);">🚪 Çıkış Yap</a>
                         </div>
                     </div>
                 </div>
             <?php else: ?>
-                <!-- Guest Links -->
-                <div class="nav-actions">
-                    <a href="/ilterhoca/login.php" class="btn btn-sm btn-secondary">Giriş Yap</a>
-                    <a href="/ilterhoca/register.php" class="btn btn-sm btn-primary">Kayıt Ol</a>
-                </div>
+                <!-- Normal Kullanıcı -->
+                <a href="/ilterhoca/" class="nav-link <?= ($current_page ?? '') === 'home' ? 'active' : '' ?>">Ana Sayfa</a>
+                <a href="/ilterhoca/events.php" class="nav-link <?= ($current_page ?? '') === 'events' ? 'active' : '' ?>">Etkinlikler</a>
+
+                <?php if (isset($_SESSION['user_id'])): ?>
+                    <a href="/ilterhoca/my_tickets.php" class="nav-link <?= ($current_page ?? '') === 'my_tickets' ? 'active' : '' ?>">Biletlerim</a>
+                    <div class="nav-actions">
+                        <div class="user-menu">
+                            <button class="user-menu-trigger" type="button">
+                                <span class="user-avatar">
+                                    <?= mb_strtoupper(mb_substr($_SESSION['full_name'] ?? 'U', 0, 1, 'UTF-8'), 'UTF-8') ?>
+                                </span>
+                                <span><?= htmlspecialchars($_SESSION['full_name'] ?? 'Kullanıcı') ?></span>
+                                <span style="font-size:0.6rem;">▼</span>
+                            </button>
+                            <div class="user-dropdown">
+                                <a href="/ilterhoca/profile.php">👤 Profilim</a>
+                                <a href="/ilterhoca/my_tickets.php">🎫 Biletlerim</a>
+                                <div class="dropdown-divider"></div>
+                                <a href="/ilterhoca/auth/logout.php" style="color: var(--danger);">🚪 Çıkış Yap</a>
+                            </div>
+                        </div>
+                    </div>
+                <?php else: ?>
+                    <div class="nav-actions">
+                        <a href="/ilterhoca/auth/login.php" class="btn btn-sm btn-secondary">Giriş Yap</a>
+                        <a href="/ilterhoca/auth/register.php" class="btn btn-sm btn-primary">Kayıt Ol</a>
+                    </div>
+                <?php endif; ?>
             <?php endif; ?>
         </div>
     </div>

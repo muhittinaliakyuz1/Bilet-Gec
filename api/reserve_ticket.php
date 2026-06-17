@@ -39,6 +39,12 @@ try {
 
     $user_id = get_current_user_id();
 
+    if (is_panel_user()) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Firma hesabında bilet alamazsınız.']);
+        exit;
+    }
+
     // Parse JSON body
     $input = json_decode(file_get_contents('php://input'), true);
 

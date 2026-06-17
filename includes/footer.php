@@ -25,10 +25,10 @@
                 <h4>Hızlı Linkler</h4>
                 <ul>
                     <li><a href="/ilterhoca/">Ana Sayfa</a></li>
-                    <li><a href="/ilterhoca/#events">Etkinlikler</a></li>
-                    <li><a href="/ilterhoca/tickets.php">Biletlerim</a></li>
-                    <li><a href="/ilterhoca/login.php">Giriş Yap</a></li>
-                    <li><a href="/ilterhoca/register.php">Kayıt Ol</a></li>
+                    <li><a href="/ilterhoca/events.php">Etkinlikler</a></li>
+                    <li><a href="/ilterhoca/my_tickets.php">Biletlerim</a></li>
+                    <li><a href="/ilterhoca/auth/login.php">Giriş Yap</a></li>
+                    <li><a href="/ilterhoca/auth/register.php">Kayıt Ol</a></li>
                 </ul>
             </div>
 
@@ -36,11 +36,11 @@
             <div class="footer-col">
                 <h4>Kategoriler</h4>
                 <ul>
-                    <li><a href="/ilterhoca/#events">🎵 Konser</a></li>
-                    <li><a href="/ilterhoca/#events">🎭 Tiyatro</a></li>
-                    <li><a href="/ilterhoca/#events">⚽ Spor</a></li>
-                    <li><a href="/ilterhoca/#events">🎤 Stand-up</a></li>
-                    <li><a href="/ilterhoca/#events">🎪 Festival</a></li>
+                    <li><a href="/ilterhoca/events.php">🎵 Konser</a></li>
+                    <li><a href="/ilterhoca/events.php">🎭 Tiyatro</a></li>
+                    <li><a href="/ilterhoca/events.php">⚽ Spor</a></li>
+                    <li><a href="/ilterhoca/events.php">🎤 Stand-up</a></li>
+                    <li><a href="/ilterhoca/events.php">🎪 Festival</a></li>
                 </ul>
             </div>
 

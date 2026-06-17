@@ -181,7 +181,7 @@ try {
             . '<li><strong>İade Tutarı:</strong> ₺' . number_format($refund_amount, 2, ',', '.') . '</li>'
             . '<li><strong>Nedeni:</strong> ' . htmlspecialchars($reason) . '</li>'
             . '</ul>'
-            . '<p><a href="' . BASE_URL . 'admin/manage_refunds.php">Admin Panelinde İncele</a></p>'
+            . '<p><a href="' . BASE_URL . 'admin/manage_refunds.php">Firma Panelinde İncele</a></p>'
             . '</body></html>';
         send_mail_message($admin['email'], $subject, $message);
     }
